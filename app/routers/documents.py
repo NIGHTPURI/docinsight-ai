@@ -6,6 +6,8 @@ from app.config import settings
 from app.schemas import SummaryResponse, UploadResponse
 from app.services.ai_service import summarize_text
 from app.services.pdf_service import extract_text_from_pdf
+from app.schemas import AskRequest, AskResponse, SummaryResponse, UploadResponse
+from app.services.ai_service import ask_about_document, summarize_text
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -91,3 +93,20 @@ def get_document(document_id: int):
         "summary": document["summary"],
         "text_preview": document["text"][:500],
     }
+
+@router.post("/{document_id}/ask", response_model=AskResponse)
+def ask_document(document_id: int, request: AskRequest):
+    document = DOCUMENT_STORE.get(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    try:
+        answer = ask_about_document(document["text"], request.question)
+
+        return AskResponse(
+            document_id=document_id,
+            question=request.question,
+            answer=answer,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"질문 처리 중 오류가 발생했습니다: {str(e)}")

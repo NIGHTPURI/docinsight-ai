@@ -30,3 +30,34 @@ def summarize_text(text: str) -> str:
     )
 
     return response.output_text.strip()
+
+def ask_about_document(document_text: str, question: str) -> str:
+    if not document_text or not document_text.strip():
+        raise ValueError("문서 텍스트가 비어 있습니다.")
+
+    if not question or not question.strip():
+        raise ValueError("질문이 비어 있습니다.")
+
+    shortened_text = document_text[:12000]
+
+    prompt = f"""
+다음 문서를 바탕으로 사용자의 질문에 한국어로 답변해 주세요.
+
+조건:
+1. 반드시 제공된 문서 내용만 근거로 답변할 것
+2. 문서에 없는 내용은 추측하지 말 것
+3. 답변은 간결하지만 충분히 이해 가능하게 작성할 것
+
+문서:
+{shortened_text}
+
+질문:
+{question}
+""".strip()
+
+    response = client.responses.create(
+        model=settings.model_name,
+        input=prompt,
+    )
+
+    return response.output_text.strip()

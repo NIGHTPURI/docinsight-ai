@@ -1,96 +1,153 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API = "http://127.0.0.1:8000";
 
-function App() {
+export default function App() {
   const [file, setFile] = useState(null);
-  const [documentId, setDocumentId] = useState(null);
-  const [filename, setFilename] = useState("");
+  const [documents, setDocuments] = useState([]);
+  const [selectedDoc, setSelectedDoc] = useState(null);
   const [summary, setSummary] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
-  const [asking, setAsking] = useState(false);
-  const [error, setError] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files?.[0];
-    setFile(selectedFile || null);
-    setError("");
-    setSummary("");
-    setAnswer("");
-    setDocumentId(null);
-    setFilename(selectedFile?.name || "");
+  useEffect(() => {
+    const loadDocuments = async () => {
+      try {
+        const res = await fetch(`${API}/documents`);
+        if (!res.ok) {
+          throw new Error("문서 목록을 불러오지 못했습니다.");
+        }
+
+        const data = await res.json();
+        setDocuments(data);
+      } catch (error) {
+        console.error(error);
+        setErrorMessage("문서 목록을 불러오는 중 오류가 발생했습니다.");
+      }
+    };
+
+    loadDocuments();
+  }, []);
+
+  const fetchDocuments = async () => {
+    const res = await fetch(`${API}/documents`);
+    if (!res.ok) {
+      throw new Error("문서 목록을 불러오지 못했습니다.");
+    }
+
+    const data = await res.json();
+    setDocuments(data);
   };
 
-  const handleUploadAndSummarize = async () => {
+  const uploadFile = async () => {
     if (!file) {
-      setError("PDF 파일을 선택해 주세요.");
+      setErrorMessage("업로드할 PDF 파일을 선택해 주세요.");
       return;
     }
 
-    setLoading(true);
-    setError("");
-    setSummary("");
-    setAnswer("");
+    const formData = new FormData();
+    formData.append("file", file);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      setLoading(true);
+      setErrorMessage("");
 
-      const uploadResponse = await fetch(`${API_BASE_URL}/documents/upload`, {
+      const res = await fetch(`${API}/documents/upload`, {
         method: "POST",
         body: formData,
       });
 
-      const uploadData = await uploadResponse.json();
-
-      if (!uploadResponse.ok) {
-        throw new Error(uploadData.detail || "파일 업로드에 실패했습니다.");
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.detail || "파일 업로드에 실패했습니다.");
       }
 
-      const newDocumentId = uploadData.document_id;
-      setDocumentId(newDocumentId);
+      await fetchDocuments();
+      setFile(null);
 
-      const summarizeResponse = await fetch(
-        `${API_BASE_URL}/documents/${newDocumentId}/summarize`,
-        {
-          method: "POST",
-        }
-      );
-
-      const summarizeData = await summarizeResponse.json();
-
-      if (!summarizeResponse.ok) {
-        throw new Error(summarizeData.detail || "문서 요약에 실패했습니다.");
+      const fileInput = document.getElementById("file-input");
+      if (fileInput) {
+        fileInput.value = "";
       }
-
-      setSummary(summarizeData.summary);
-    } catch (err) {
-      setError(err.message || "알 수 없는 오류가 발생했습니다.");
+    } catch (error) {
+      console.error(error);
+      setErrorMessage(error.message || "파일 업로드 중 오류가 발생했습니다.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAsk = async () => {
-    if (!documentId) {
-      setError("먼저 문서를 업로드하고 요약해야 합니다.");
+  const selectDocument = async (id) => {
+    try {
+      setLoading(true);
+      setErrorMessage("");
+
+      const res = await fetch(`${API}/documents/${id}`);
+      if (!res.ok) {
+        throw new Error("문서 정보를 불러오지 못했습니다.");
+      }
+
+      const data = await res.json();
+      setSelectedDoc(data);
+      setSummary(data.summary || "");
+      setQuestion("");
+      setAnswer("");
+    } catch (error) {
+      console.error(error);
+      setErrorMessage(error.message || "문서 조회 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const summarize = async () => {
+    if (!selectedDoc) return;
+
+    try {
+      setLoading(true);
+      setErrorMessage("");
+
+      const res = await fetch(`${API}/documents/${selectedDoc.id}/summarize`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.detail || "요약 생성에 실패했습니다.");
+      }
+
+      const data = await res.json();
+      setSummary(data.summary);
+
+      await fetchDocuments();
+      await selectDocument(selectedDoc.id);
+    } catch (error) {
+      console.error(error);
+      setErrorMessage(error.message || "요약 생성 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const ask = async () => {
+    if (!selectedDoc) {
+      setErrorMessage("먼저 문서를 선택해 주세요.");
       return;
     }
 
     if (!question.trim()) {
-      setError("질문을 입력해 주세요.");
+      setErrorMessage("질문을 입력해 주세요.");
       return;
     }
 
-    setAsking(true);
-    setError("");
-    setAnswer("");
-
     try {
-      const response = await fetch(`${API_BASE_URL}/documents/${documentId}/ask`, {
+      setLoading(true);
+      setErrorMessage("");
+
+      const res = await fetch(`${API}/documents/${selectedDoc.id}/ask`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -98,85 +155,150 @@ function App() {
         body: JSON.stringify({ question }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "질문 처리에 실패했습니다.");
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.detail || "질문 처리에 실패했습니다.");
       }
 
+      const data = await res.json();
       setAnswer(data.answer);
-    } catch (err) {
-      setError(err.message || "질문 처리 중 오류가 발생했습니다.");
+    } catch (error) {
+      console.error(error);
+      setErrorMessage(error.message || "질문 처리 중 오류가 발생했습니다.");
     } finally {
-      setAsking(false);
+      setLoading(false);
     }
   };
 
+  const renderStatusText = (status) => {
+    if (status === "summarized") return "요약 완료";
+    if (status === "uploaded") return "업로드 완료";
+    if (status === "failed") return "처리 실패";
+    return status || "상태 없음";
+  };
+
   return (
-    <div className="page">
-      <div className="container">
-        <header className="hero">
-          <p className="badge">AI Document Summarizer</p>
+    <div className="app">
+      <header className="app-header">
+        <div>
           <h1>DocInsight AI</h1>
-          <p className="subtitle">
-            PDF 문서를 업로드하면 텍스트를 추출하고 AI가 핵심 내용을 요약합니다.
-          </p>
-        </header>
+          <p>PDF 업로드, 요약, 문서 기반 질문 응답을 한 곳에서 관리합니다.</p>
+        </div>
+      </header>
 
-        <section className="card">
-          <h2>1. PDF 업로드</h2>
-          <div className="upload-box">
-            <input type="file" accept=".pdf" onChange={handleFileChange} />
-            {filename && <p className="filename">선택된 파일: {filename}</p>}
-            <button onClick={handleUploadAndSummarize} disabled={loading}>
-              {loading ? "업로드 및 요약 중..." : "업로드하고 요약하기"}
-            </button>
+      {errorMessage && <div className="error-banner">{errorMessage}</div>}
+
+      <section className="upload-card">
+        <div className="upload-left">
+          <h2>문서 업로드</h2>
+          <p>PDF 파일을 업로드하면 문서 목록에 추가됩니다.</p>
+        </div>
+
+        <div className="upload-right">
+          <input
+            id="file-input"
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => setFile(e.target.files[0])}
+          />
+          <button className="primary-button" onClick={uploadFile} disabled={loading}>
+            업로드
+          </button>
+        </div>
+      </section>
+
+      <main className="layout">
+        <aside className="sidebar">
+          <div className="panel-header">
+            <h3>문서 목록</h3>
+            <span>{documents.length}개</span>
           </div>
-        </section>
 
-        {error && (
-          <section className="card error-card">
-            <p>{error}</p>
-          </section>
-        )}
-
-        <section className="card">
-          <h2>2. 요약 결과</h2>
-          <div className="result-box">
-            {summary ? (
-              <p>{summary}</p>
+          <div className="document-list">
+            {documents.length === 0 ? (
+              <div className="empty-box">업로드된 문서가 없습니다.</div>
             ) : (
-              <p className="placeholder">아직 요약 결과가 없습니다.</p>
+              documents.map((doc) => (
+                <button
+                  key={doc.id}
+                  type="button"
+                  className={`document-item ${
+                    selectedDoc?.id === doc.id ? "active" : ""
+                  }`}
+                  onClick={() => selectDocument(doc.id)}
+                >
+                  <div className="document-item-top">
+                    <strong>{doc.filename}</strong>
+                  </div>
+                  <div className="document-meta">
+                    <span className="status-badge">{renderStatusText(doc.status)}</span>
+                    <span>{doc.extracted_text_length} chars</span>
+                  </div>
+                </button>
+              ))
             )}
           </div>
-        </section>
+        </aside>
 
-        <section className="card">
-          <h2>3. 문서에 질문하기</h2>
-          <div className="qa-box">
-            <textarea
-              placeholder="예: 이 문서의 핵심 목적은 무엇인가요?"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              rows={4}
-            />
-            <button onClick={handleAsk} disabled={asking || !documentId}>
-              {asking ? "질문 처리 중..." : "질문하기"}
-            </button>
-          </div>
-          <div className="result-box">
-            {answer ? (
-              <p>{answer}</p>
-            ) : (
-              <p className="placeholder">
-                문서를 업로드한 뒤 질문을 입력하면 답변이 표시됩니다.
-              </p>
-            )}
-          </div>
+        <section className="content">
+          {!selectedDoc ? (
+            <div className="empty-state">
+              <h2>문서를 선택하세요</h2>
+              <p>왼쪽 문서 목록에서 확인할 PDF를 선택하면 상세 정보가 표시됩니다.</p>
+            </div>
+          ) : (
+            <>
+              <div className="content-header">
+                <div>
+                  <h2>{selectedDoc.filename}</h2>
+                  <p>
+                    상태: <strong>{renderStatusText(selectedDoc.status)}</strong>
+                  </p>
+                </div>
+                <button className="primary-button" onClick={summarize} disabled={loading}>
+                  요약 생성
+                </button>
+              </div>
+
+              <div className="card">
+                <h3>문서 요약</h3>
+                <div className="result-box">
+                  {summary ? (
+                    <p>{summary}</p>
+                  ) : (
+                    <p className="placeholder-text">아직 생성된 요약이 없습니다.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="card">
+                <h3>문서 질문</h3>
+                <div className="question-box">
+                  <input
+                    type="text"
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="예: 이 문서의 핵심 내용은 무엇인가요?"
+                  />
+                  <button className="primary-button" onClick={ask} disabled={loading}>
+                    질문하기
+                  </button>
+                </div>
+
+                <div className="result-box">
+                  {answer ? (
+                    <p>{answer}</p>
+                  ) : (
+                    <p className="placeholder-text">질문 결과가 여기에 표시됩니다.</p>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </section>
-      </div>
+      </main>
+
+      {loading && <div className="loading-overlay">처리 중...</div>}
     </div>
   );
 }
-
-export default App;

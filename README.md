@@ -2,6 +2,13 @@
 
 PDF 문서를 업로드하면 텍스트를 추출하고, AI를 활용해 요약 및 문서 기반 질문 응답을 제공하는 서비스입니다.
 
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-00796B?style=flat&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white)
+
+[처리 흐름](#3-아키텍처) · [검증 범위](#6-검증-근거와-범위) · [로컬 실행](#7-실행-방법) · [API](#8-api)
+
 AI 기능은 OpenAI 모델 **API 연동**으로 구현했습니다. 모델을 직접 학습하거나 파인튜닝하지 않으며, embedding 검색·vector DB를 사용하는 RAG는 구현하지 않았습니다.
 
 ---
@@ -46,6 +53,21 @@ DocInsight AI는 긴 문서를 빠르게 이해하기 어려운 문제를 해결
 
 ## 3. 아키텍처
 
+```mermaid
+flowchart TD
+    U["React UI"] --> R["FastAPI Router"]
+    R -->|업로드| P["PDF 저장 · 텍스트 추출"]
+    P --> D["Repository · SQLite"]
+    R -->|요약 · 질문| S["문서 텍스트 읽기"]
+    D --> S
+    S --> L["앞 12,000자 · OpenAI API"]
+    L --> W["요약 · 질문과 답변 저장"]
+    W --> D
+```
+
+<details>
+<summary>레이어별 책임을 텍스트로 보기</summary>
+
 ```text
 React → FastAPI Router
          ├─ PDF Service → 파일 저장 / PyMuPDF 텍스트 추출
@@ -53,7 +75,12 @@ React → FastAPI Router
          └─ Repository → SQLAlchemy → SQLite (문서 / 요약 / 질문·답변)
 ```
 
+</details>
+
 업로드는 파일 저장·텍스트 추출·DB 저장을 수행합니다. 요약과 질문은 별도 요청으로 처리하며, 업로드 실패 시 저장한 파일을 정리합니다.
+
+> [!NOTE]
+> 요약이 이미 저장되어 있으면 API를 다시 호출하지 않고 재사용합니다. 모델 입력은 문서 앞 12,000자이며, 뒤쪽 내용을 검색하는 RAG나 스캔 문서용 OCR은 포함하지 않습니다.
 
 ### 기술적 선택
 

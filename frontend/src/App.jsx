@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-const API = "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+
+async function responseError(res, fallback) {
+  const data = await res.json().catch(() => null);
+  return new Error(typeof data?.detail === "string" ? data.detail : fallback);
+}
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -10,6 +15,8 @@ export default function App() {
   const [summary, setSummary] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
+  const [sources, setSources] = useState([]);
+  const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -61,8 +68,7 @@ export default function App() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.detail || "파일 업로드에 실패했습니다.");
+        throw await responseError(res, "파일 업로드에 실패했습니다.");
       }
 
       await fetchDocuments();
@@ -95,6 +101,8 @@ export default function App() {
       setSummary(data.summary || "");
       setQuestion("");
       setAnswer("");
+      setSources([]);
+      setSearched(false);
     } catch (error) {
       console.error(error);
       setErrorMessage(error.message || "문서 조회 중 오류가 발생했습니다.");
@@ -115,15 +123,13 @@ export default function App() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.detail || "요약 생성에 실패했습니다.");
+        throw await responseError(res, "요약 생성에 실패했습니다.");
       }
 
       const data = await res.json();
       setSummary(data.summary);
-
+      setSelectedDoc((doc) => ({ ...doc, summary: data.summary, status: "summarized" }));
       await fetchDocuments();
-      await selectDocument(selectedDoc.id);
     } catch (error) {
       console.error(error);
       setErrorMessage(error.message || "요약 생성 중 오류가 발생했습니다.");
@@ -132,7 +138,7 @@ export default function App() {
     }
   };
 
-  const ask = async () => {
+  const queryDocument = async (mode) => {
     if (!selectedDoc) {
       setErrorMessage("먼저 문서를 선택해 주세요.");
       return;
@@ -146,8 +152,11 @@ export default function App() {
     try {
       setLoading(true);
       setErrorMessage("");
+      setAnswer("");
+      setSources([]);
+      setSearched(false);
 
-      const res = await fetch(`${API}/documents/${selectedDoc.id}/ask`, {
+      const res = await fetch(`${API}/documents/${selectedDoc.id}/${mode}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -156,12 +165,13 @@ export default function App() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.detail || "질문 처리에 실패했습니다.");
+        throw await responseError(res, "질문 처리에 실패했습니다.");
       }
 
       const data = await res.json();
-      setAnswer(data.answer);
+      setAnswer(data.answer || "");
+      setSources(data.sources);
+      setSearched(true);
     } catch (error) {
       console.error(error);
       setErrorMessage(error.message || "질문 처리 중 오류가 발생했습니다.");
@@ -186,12 +196,12 @@ export default function App() {
         </div>
       </header>
 
-      {errorMessage && <div className="error-banner">{errorMessage}</div>}
+      {errorMessage && <div className="error-banner" role="alert">{errorMessage}</div>}
 
       <section className="upload-card">
         <div className="upload-left">
           <h2>문서 업로드</h2>
-          <p>PDF 파일을 업로드하면 문서 목록에 추가됩니다.</p>
+          <p>기본 한도 10 MiB · 200쪽 · 추출 텍스트 100만 자. 텍스트가 있는 PDF를 선택하세요.</p>
         </div>
 
         <div className="upload-right">
@@ -199,6 +209,8 @@ export default function App() {
             id="file-input"
             type="file"
             accept="application/pdf"
+            aria-label="업로드할 PDF"
+            disabled={loading}
             onChange={(e) => setFile(e.target.files[0])}
           />
           <button className="primary-button" onClick={uploadFile} disabled={loading}>
@@ -226,6 +238,8 @@ export default function App() {
                     selectedDoc?.id === doc.id ? "active" : ""
                   }`}
                   onClick={() => selectDocument(doc.id)}
+                  disabled={loading}
+                  aria-pressed={selectedDoc?.id === doc.id}
                 >
                   <div className="document-item-top">
                     <strong>{doc.filename}</strong>
@@ -262,6 +276,11 @@ export default function App() {
 
               <div className="card">
                 <h3>문서 요약</h3>
+                <p className="help-text">
+                  {selectedDoc.extracted_text_length > 12000
+                    ? `문서 ${selectedDoc.extracted_text_length.toLocaleString()}자 중 앞 12,000자만 요약합니다.`
+                    : "추출된 텍스트를 요약합니다."}
+                </p>
                 <div className="result-box">
                   {summary ? (
                     <p>{summary}</p>
@@ -273,25 +292,53 @@ export default function App() {
 
               <div className="card">
                 <h3>문서 질문</h3>
+                <p className="help-text">문서 전체에서 질문의 단어가 포함된 구간을 찾습니다. 문서에 쓰인 구체적인 단어로 질문해 보세요.</p>
                 <div className="question-box">
                   <input
                     type="text"
                     value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="예: 이 문서의 핵심 내용은 무엇인가요?"
+                    aria-label="문서에 대한 질문"
+                    maxLength={1000}
+                    disabled={loading}
+                    onChange={(e) => {
+                      setQuestion(e.target.value);
+                      setAnswer("");
+                      setSources([]);
+                      setSearched(false);
+                    }}
+                    placeholder="예: 계약 해지 통보 기간은 얼마인가요?"
                   />
-                  <button className="primary-button" onClick={ask} disabled={loading}>
-                    질문하기
+                </div>
+                <div className="question-actions">
+                  <button className="secondary-button" onClick={() => queryDocument("search")} disabled={loading || !question.trim()}>
+                    문서에서 찾기
+                  </button>
+                  <button className="primary-button" onClick={() => queryDocument("ask")} disabled={loading || !question.trim()}>
+                    AI로 답변 받기
                   </button>
                 </div>
+                <p className="help-text">찾기는 API 키 없이 사용할 수 있습니다. AI 답변과 요약은 OpenAI 설정이 필요합니다.</p>
 
-                <div className="result-box">
+                <div className="result-box" aria-live="polite">
                   {answer ? (
                     <p>{answer}</p>
                   ) : (
-                    <p className="placeholder-text">질문 결과가 여기에 표시됩니다.</p>
+                    <p className="placeholder-text">{searched ? "검색 결과를 아래에서 확인하세요." : "질문 결과가 여기에 표시됩니다."}</p>
                   )}
                 </div>
+                {searched && (
+                  <section className="sources" aria-label="검색한 문서 구간">
+                    <h4>검색한 문서 구간 · {sources.length}개</h4>
+                    <p className="help-text">AI 답변에 제공하는 문맥입니다. 답변의 사실 여부를 자동 검증한 결과는 아닙니다. 위치는 PDF 쪽수가 아닌 추출 텍스트 기준입니다.</p>
+                    {sources.length === 0 && <p>일치하는 구간을 찾지 못했습니다. 문서에 쓰인 단어로 다시 검색해 보세요.</p>}
+                    {sources.map((source) => (
+                      <details key={source.source_id}>
+                        <summary>{source.source_id} · 문자 위치 {source.start_char}–{source.end_char}</summary>
+                        <p>{source.text}</p>
+                      </details>
+                    ))}
+                  </section>
+                )}
               </div>
             </>
           )}

@@ -4,3 +4,10 @@ uploads/*
 !.gitkeep
 __pycache__/
 *.pyc
+*.db
+*.sqlite*
+.coverage
+test-results/
+output/
+.playwright/
+.playwright-cli/

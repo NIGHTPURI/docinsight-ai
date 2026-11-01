@@ -1,7 +1,8 @@
-import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.dependencies import get_db
 from app.repositories.document_repository import (
@@ -20,9 +21,11 @@ from app.schemas import (
     DocumentSummaryResponse,
     DocumentUploadResponse,
     QuestionAnswerItemResponse,
+    SearchResponse,
 )
-from app.services.ai_service import answer_question_about_document, summarize_document
-from app.services.pdf_service import extract_text_from_pdf, save_pdf_file
+from app.services.ai_service import answer_question_about_document, summarize_document, SUMMARY_MAX_CHARS
+from app.services.pdf_service import extract_text_from_pdf, save_pdf_file, display_filename
+from app.services.retrieval_service import retrieve_sources, format_context
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -39,14 +42,15 @@ async def upload_document(
 
     try:
         saved_path, file_size = await save_pdf_file(file)
-        extracted_text = extract_text_from_pdf(saved_path)
+        extracted_text = await run_in_threadpool(extract_text_from_pdf, saved_path)
 
         if not extracted_text.strip():
             raise HTTPException(status_code=400, detail="PDF에서 추출된 텍스트가 없습니다.")
 
-        document = create_document(
+        document = await run_in_threadpool(
+            create_document,
             db,
-            filename=file.filename,
+            filename=display_filename(file.filename),
             original_path=saved_path,
             content_type=file.content_type,
             file_size=file_size,
@@ -59,9 +63,12 @@ async def upload_document(
             extracted_text_length=document.extracted_text_length,
             message="업로드 및 텍스트 추출 완료",
         )
-    except Exception:
-        if saved_path and os.path.exists(saved_path):
-            os.remove(saved_path)
+    except BaseException:
+        try:
+            db.rollback()
+        finally:
+            if saved_path:
+                Path(saved_path).unlink(missing_ok=True)
         raise
 
 
@@ -108,6 +115,9 @@ def summarize_document_api(document_id: int, db: Session = Depends(get_db)):
             document_id=document.id,
             filename=document.filename,
             summary=document.summary,
+            source_chars=min(len(document.extracted_text), SUMMARY_MAX_CHARS),
+            total_chars=len(document.extracted_text),
+            truncated=len(document.extracted_text) > SUMMARY_MAX_CHARS,
         )
 
     summary = summarize_document(document.extracted_text)
@@ -117,7 +127,20 @@ def summarize_document_api(document_id: int, db: Session = Depends(get_db)):
         document_id=updated_document.id,
         filename=updated_document.filename,
         summary=updated_document.summary,
+        source_chars=min(len(document.extracted_text), SUMMARY_MAX_CHARS),
+        total_chars=len(document.extracted_text),
+        truncated=len(document.extracted_text) > SUMMARY_MAX_CHARS,
     )
+
+
+@router.post("/{document_id}/search", response_model=SearchResponse)
+def search_document(document_id: int, request: AskRequest, db: Session = Depends(get_db)):
+    document = get_document_by_id(db, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    sources = retrieve_sources(document.extracted_text, request.question)
+    return SearchResponse(document_id=document_id, question=request.question,
+                          sources=[source.to_dict() for source in sources])
 
 
 @router.post("/{document_id}/ask", response_model=AskResponse)
@@ -130,7 +153,11 @@ def ask_document(
     if not document:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
 
-    answer = answer_question_about_document(document.extracted_text, request.question)
+    sources = retrieve_sources(document.extracted_text, request.question)
+    if sources:
+        answer = answer_question_about_document(format_context(sources), request.question)
+    else:
+        answer = "질문과 관련된 문서 구간을 찾지 못했습니다. 문서에 사용된 단어로 질문을 바꿔 주세요."
 
     create_question_answer(
         db,
@@ -143,6 +170,8 @@ def ask_document(
         document_id=document.id,
         question=request.question,
         answer=answer,
+        sources=[source.to_dict() for source in sources],
+        answer_status="generated" if sources else "no_evidence",
     )
 
 
